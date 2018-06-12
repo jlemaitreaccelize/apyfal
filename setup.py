@@ -7,7 +7,7 @@ run "./setup.py --help-commands" for help.
 from datetime import datetime
 from os import makedirs, chdir, environ
 from os.path import dirname, abspath, join, isfile, isdir
-from sys import argv
+from sys import argv, version_info
 
 from setuptools import setup, find_packages, Command
 
@@ -90,18 +90,28 @@ class SwaggerCommand(Command):
     description = "Generate REST API client (apyfal/_swagger_client)"
     user_options = [
         ('swagger-version=', None, 'Force use of a specific Swagger-Codegen version'),
+        ('http-library=', None, 'Select HTTP library to use'
+                                ' (Possibles values: asyncio, tornado, urllib3 (default)'),
     ]
 
     def initialize_options(self):
         """Options default values"""
         self.swagger_version = ''
+        self.http_library = ''
 
     def finalize_options(self):
         """Validate options values"""
+        if not self.http_library:
+            # Default to Urllib3
+            # TODO: Set best default value for Python 2 and 3 (tornado ?)
+            self.http_library = 'urllib3'
+        elif self.http_library in 'asyncio' and version_info[0] == 2:
+            # AsyncIO not compatible with Python 2
+            raise ValueError('"asyncio" not available on Python 2')
 
     def run(self):
         """Run Swagger command"""
-        # Lazzy import since required only here
+        # Lazy import since required only here
         import json
         from shutil import copytree, rmtree
         from subprocess import Popen
@@ -168,11 +178,15 @@ class SwaggerCommand(Command):
         rmtree(REST_API_GENERATED_DIR, ignore_errors=True)
 
         # Run Swagger-codegen
-        command = ' '.join([
+        command = [
                 "java", "-jar", jar_path, "generate",
                 "-i", input_spec_path,
                 "-o", REST_API_GENERATED_DIR,
-                "-l", "python"])
+                "-l", "python"]
+        if self.http_library != 'urllib3':
+            # Add alternate HTTP library
+            command.extend(['--library', self.http_library])
+        command = ' '.join(command)
         print('Running command "%s"' % command)
         Popen(command, shell=True).communicate()
 
@@ -223,9 +237,13 @@ if 'swagger_codegen' not in argv:
         from ast import literal_eval
         with open(REST_API_SETUP) as source_file:
             for line in source_file:
-                if line.rstrip().startswith('REQUIRES = ['):
+                line = line.rstrip()
+                if line.startswith('REQUIRES = ['):
                     PACKAGE_INFO['install_requires'].extend(
                         literal_eval(line.split('=', 1)[1].strip(" \n")))
+                elif line.startswith('REQUIRES.append('):
+                    PACKAGE_INFO['install_requires'].append(
+                        line.split('(')[1].split(')')[0].strip("\"'"))
                     break
     else:
         import warnings
